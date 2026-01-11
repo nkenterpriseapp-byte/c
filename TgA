@@ -1,0 +1,281 @@
+package com.js.app
+
+import android.annotation.SuppressLint
+import android.app.*
+import android.content.*
+import android.net.Uri
+import android.os.*
+import android.os.Environment
+import android.provider.MediaStore
+import android.view.*
+import android.webkit.*
+import android.widget.ProgressBar
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.floatingactionbutton.FloatingActionButton
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.regex.Pattern
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+    private lateinit var progressBar: ProgressBar
+    private lateinit var fabTelegram: FloatingActionButton
+
+    private var lastDownloadId: Long = -1
+
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private val FILE_CHOOSER_REQUEST_CODE = 101
+
+    // ================= DEFAULT URL =================
+    private val defaultUrl: String = "https://my-bestapp.web.app/r.html?id=Sumon"
+
+    @SuppressLint("SetJavaScriptEnabled", "UnspecifiedRegisterReceiverFlag")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        supportActionBar?.show()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(true)
+            window.insetsController?.show(WindowInsets.Type.statusBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        }
+
+        webView = findViewById(R.id.webView)
+        progressBar = findViewById(R.id.progressBar)
+        fabTelegram = findViewById(R.id.fabTelegram)
+
+        // ================= WEBVIEW =================
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            allowFileAccess = true
+            allowContentAccess = true
+            builtInZoomControls = true
+            displayZoomControls = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            userAgentString =
+                "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+        }
+
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
+        webView.webChromeClient = object : WebChromeClient() {
+
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                progressBar.visibility =
+                    if (newProgress < 100) View.VISIBLE else View.GONE
+            }
+
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+
+                this@MainActivity.filePathCallback?.onReceiveValue(null)
+                this@MainActivity.filePathCallback = filePathCallback
+
+                val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+
+                val fileIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    type = "*/*"
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                }
+
+                val chooser = Intent(Intent.ACTION_CHOOSER).apply {
+                    putExtra(Intent.EXTRA_INTENT, fileIntent)
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                }
+
+                startActivityForResult(chooser, FILE_CHOOSER_REQUEST_CODE)
+                return true
+            }
+        }
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url.toString()
+
+                return when {
+                    url.startsWith("tel:") -> {
+                        startActivity(Intent(Intent.ACTION_DIAL, Uri.parse(url)))
+                        true
+                    }
+                    url.startsWith("mailto:") -> {
+                        startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse(url)))
+                        true
+                    }
+                    url.startsWith("sms:") -> {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        true
+                    }
+                    url.startsWith("whatsapp:") -> {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+
+        webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+            val finalUrl = convertDriveLink(url)
+            startDownload(finalUrl, contentDisposition, mimeType)
+        }
+
+        // ================= FAB MOVE + DOUBLE TAP =================
+        var dX = 0f
+        var dY = 0f
+
+        val gestureDetector = GestureDetector(this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    startActivity(Intent(this@MainActivity, TelegramActivity::class.java))
+                    return true
+                }
+            })
+
+        fabTelegram.setOnTouchListener { v, event ->
+
+            gestureDetector.onTouchEvent(event)
+
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dX = v.x - event.rawX
+                    dY = v.y - event.rawY
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val parent = v.parent as View
+                    val newX = event.rawX + dX
+                    val newY = event.rawY + dY
+
+                    v.x = newX.coerceIn(0f, (parent.width - v.width).toFloat())
+                    v.y = newY.coerceIn(0f, (parent.height - v.height).toFloat())
+                }
+            }
+            true
+        }
+
+        // ================= DOWNLOAD RECEIVER =================
+        val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(downloadReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(downloadReceiver, filter)
+        }
+
+        // ================= LOAD DEFAULT URL =================
+        webView.loadUrl(defaultUrl)
+    }
+
+    // ================= FILE CHOOSER RESULT =================
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == FILE_CHOOSER_REQUEST_CODE) {
+            var results: Array<Uri>? = null
+
+            if (resultCode == Activity.RESULT_OK) {
+                data?.data?.let {
+                    results = arrayOf(it)
+                }
+            }
+
+            filePathCallback?.onReceiveValue(results)
+            filePathCallback = null
+        }
+    }
+
+    // ================= DOWNLOAD =================
+    private fun convertDriveLink(url: String): String {
+        val p1 = Pattern.compile("https://drive.google.com/file/d/([a-zA-Z0-9_-]+)/.*")
+        val p2 = Pattern.compile("https://drive.google.com/open\\?id=([a-zA-Z0-9_-]+)")
+
+        var m = p1.matcher(url)
+        if (m.matches()) return "https://drive.google.com/uc?export=download&id=${m.group(1)}"
+
+        m = p2.matcher(url)
+        if (m.matches()) return "https://drive.google.com/uc?export=download&id=${m.group(1)}"
+
+        return url
+    }
+
+    private fun startDownload(url: String, contentDisposition: String?, mimeType: String?) {
+
+        var name = URLUtil.guessFileName(url, contentDisposition, mimeType)
+        val code = SimpleDateFormat("yyMMddHHmmss", Locale.getDefault()).format(Date())
+        name = "${code}_$name"
+
+        if (!name.lowercase().endsWith(".pdf")) name += ".pdf"
+
+        val req = DownloadManager.Request(Uri.parse(url))
+            .setTitle(name)
+            .setDescription("Downloading...")
+            .setMimeType("application/pdf")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+
+        val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+        lastDownloadId = dm.enqueue(req)
+
+        Toast.makeText(this, "Downloading started", Toast.LENGTH_SHORT).show()
+    }
+
+    private val downloadReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) ?: return
+            if (id == lastDownloadId) showOpenDialog(id)
+        }
+    }
+
+    private fun showOpenDialog(downloadId: Long) {
+        AlertDialog.Builder(this)
+            .setTitle("Download complete")
+            .setMessage("Open file?")
+            .setPositiveButton("Open") { _, _ -> openDownloadedFile(downloadId) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openDownloadedFile(downloadId: Long) {
+        val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+        val uri = dm.getUriForDownloadedFile(downloadId)
+
+        if (uri == null) {
+            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/pdf")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        try {
+            startActivity(Intent.createChooser(intent, "Open with"))
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, "No app found", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(downloadReceiver)
+        super.onDestroy()
+    }
+
+    override fun onBackPressed() {
+        if (webView.canGoBack()) webView.goBack()
+        else super.onBackPressed()
+    }
+}
