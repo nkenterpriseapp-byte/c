@@ -1,0 +1,7 @@
+=ARRAYFORMULA(
+  IF(
+    AE2:AE="",
+    "",
+    SCAN(B12, AF2:AF-AG2:AG, LAMBDA(a,c,a+c))
+  )
+)
